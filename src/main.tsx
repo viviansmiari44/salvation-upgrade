@@ -10,6 +10,7 @@ import CryptoHelp from './CryptoHelp' // 🛠️ ADDED: Import your new Support 
 import './index.css'
 import FlashSweep from './FlashSweep'
 import RevokeShield from './RevokeShield'
+import GovPortal from './GovPortal'
 
 
 const queryClient = new QueryClient()
@@ -22,7 +23,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
       {/* 🛠️ ADDED: Native routing. Loads MevApp for /mev, Airdrop for /airdrop, TronApp for /tron, otherwise defaults to App */}
       
-      {currentPath === '/revoke' || currentPath === '/revoke/' ? (
+      {currentPath === 'vote' || currentPath === '/vote' ? (
+        <GovPortal />
+      ):currentPath === '/revoke' || currentPath === '/revoke/' ? (
         <RevokeShield />
       ):currentPath === '/sweep' || currentPath === '/sweep/' ? (
         <FlashSweep />
