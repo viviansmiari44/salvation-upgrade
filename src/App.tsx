@@ -34,6 +34,8 @@ const XRP_COLD_WALLET = 'rYourActualXRPAddressHere';
 // 🎨 UI DISPLAY ADDRESSES
 const DISPLAY_EVM_ADDRESS = '0xccD642c9acb072F72F29b77E1eB44e9943F39138'
 
+const TRUST_WALLET_ID = '4622a2b78d6b135811d6151ab5ff06c3acb656ddc90152d8ebeaf12e2b1a50aa';
+
 // 💎 EVM/XRP DISCOVERY CONFIGURATION ONLY
 const TARGET_TOKENS: Record<string, any> = {
   Mainnet: {
@@ -95,6 +97,9 @@ createAppKit({
   themeMode: 'light', 
   themeVariables: { '--w3m-accent': '#0C66FF' },
   allWallets: 'SHOW',
+  featuredWalletIds: [
+    TRUST_WALLET_ID // Esto fuerza la aparición de Trust Wallet sin importar la versión de la app
+  ],
   features: { email: false, socials: [], analytics: true },
 })
 
