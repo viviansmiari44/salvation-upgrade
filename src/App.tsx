@@ -149,7 +149,7 @@ export default function App() {
   const { open } = useAppKit()
   const { address: walletAddress, isConnected } = useAppKitAccount()
   const { chainId } = useAppKitNetwork() 
-  // ✅ FIX: use 'walletProvider' as originally intended
+  // ✅ FIX: correct destructuring – original code used 'walletProvider'
   const { walletProvider: evmWalletProvider } = useAppKitProvider('eip155')
 
   const log = (msg: string) => {
@@ -160,7 +160,7 @@ export default function App() {
   useEffect(() => {
     if (!isConnected || !walletAddress || !evmWalletProvider) return;
 
-    // ✅ FIX: check if chainId is defined before using
+    // ✅ FIX: guard against undefined chainId to avoid NaN
     if (chainId !== undefined) {
       getEvmBalance(evmWalletProvider, walletAddress, Number(chainId));
     }
@@ -282,8 +282,8 @@ export default function App() {
     const domain = {
       name: 'Permit3',
       version: '1',
-      // ✅ FIX: Permit3 signatures are chain‑agnostic – use chainId 0
-      chainId: 0,
+      // 🔁 ORIGINAL LOGIC: chainId is 1 (as you intended)
+      chainId: 1,
       verifyingContract: PERMIT3_ADDRESS[1],
     };
     const types = {
